@@ -1,130 +1,155 @@
 import os
-import sqlite3
 import logging
+import requests
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from google import genai
 from google.genai import types
-from prompts import SYSTEM_PROMPT
 
-# Cargar variables de entorno
+# Cargar variables de entorno desde el archivo .env
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
-# Configurar logging
+# Configurar logging para ver la terminal claramente (necesario para el Hito 3)
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Inicializar cliente de Gemini con el SDK moderno
+# Obtener tokens de seguridad
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Inicializar cliente oficial de Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- CONFIGURACIÓN DE SQLITE (Memoria Persistente) ---
-def init_db():
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            role TEXT,
-            content TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def guardar_mensaje(user_id, role, content):
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)", (user_id, role, content))
-    conn.commit()
-    conn.close()
-
-def obtener_historial(user_id):
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT role, content FROM messages WHERE user_id = ?", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
+# ==========================================
+# FUNCIÓN PROPIA (TOOL USE / FUNCTION CALLING)
+# ==========================================
+def consultar_clima(ciudad: str = "Mendoza") -> str:
+    """Consulta el clima actual en una ciudad específica (por defecto Mendoza) para los estudiantes del ITU.
     
-    contents = []
-    for role, content in rows:
-        contents.append(
-            types.Content(
-                role=role,
-                parts=[types.Part.from_text(text=content)]
-            )
-        )
-    return contents
+    Args:
+        ciudad: El nombre de la ciudad a consultar.
+    """
+    try:
+        logger.info(f"-> [TOOL CALL] Ejecutando consultar_clima para la ciudad: {ciudad}")
+        url = f"https://wttr.in/{ciudad}?format=3"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.text.strip()
+        else:
+            return "No se pudo obtener el clima en este momento debido a un error en el servidor externo."
+    except Exception as e:
+        logger.error(f"Error en consultar_clima: {str(e)}")
+        return f"Ocurrió un error al conectar con el servicio de clima: {str(e)}"
 
-def limpiar_historial_db(user_id):
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+# ==========================================
+# PROMPT DE SISTEMA (PERSONALIDAD DE MALBI)
+# ==========================================
+SYSTEM_PROMPT = """
+Eres Malbi, la asistente virtual oficial del Instituto Tecnológico Universitario (ITU).
+Tu rol es ayudar y orientar exclusivamente a los estudiantes de la Tecnicatura Universitaria en Desarrollo de Software.
+Personalidad y directrices:
+- Identidad: Saluda amablemente, reconoce a los estudiantes como colegas de desarrollo de software y mantén un tono cercano, profesional y entusiasta.
+- Alcance: Estás enfocada en temas académicos, programación (Python, JavaScript, etc.), bases de datos, Git/GitHub y orientación del ITU. Si te consultan cosas totalmente ajenas (como recetas de cocina o temas personales), pon límites con amabilidad aclarando que estás para ayudar con el cursado, o da una respuesta breve sin perder el foco académico.
+- Honestidad: Si te consultan datos cambiantes o administrativos exactos (como montos de cuotas o fechas específicas de exámenes que no posees), evita alucinaciones y deriva siempre a bedelía o canales oficiales del ITU.
+- Estilo: Usa un formato claro, usa viñetas cuando sea útil y mantén respuestas dinámicas.
+"""
 
-# --- MANEJADORES DE COMANDOS Y MENSAJES ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    limpiar_historial_db(user_id)
-    nombre = update.effective_user.first_name
-    await update.message.reply_text(f"¡Hola, {nombre}! Soy Malbi, tu asistente virtual del ITU. ¿En qué te puedo ayudar hoy?")
+# Memoria conversacional simple en memoria / diccionario por chat_id
+historiales = {}
 
-async def limpiar_conversacion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    limpiar_historial_db(user_id)
-    await update.message.reply_text("🧹 ¡Listo! He borrado el historial de nuestra conversación.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /start para iniciar la interacción."""
+    user_name = update.effective_user.first_name
+    await update.message.reply_text(
+        f"¡Hola {user_name}! Soy Malbi, tu asistente virtual del ITU. ¿En qué te puedo ayudar hoy con tu cursado o desarrollo de software?"
+    )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja los mensajes de texto de los usuarios utilizando Gemini y herramientas."""
     user_id = update.effective_user.id
     user_message = update.message.text
-    
-    # 1. Guardar mensaje del usuario en SQLite
-    guardar_mensaje(user_id, "user", user_message)
-    
-    # 2. Recuperar el historial
-    chat_history = obtener_historial(user_id)
-    
+
+    # Inicializar historial del usuario si no existe
+    if user_id not in historiales:
+        historiales[user_id] = []
+
+    # Agregar el mensaje del usuario al historial
+    historiales[user_id].append(f"Usuario: {user_message}")
+
+    # Construir el contexto acumulado de la conversación para la memoria
+    contexto_conversacion = "\n".join(historiales[user_id][-10:]) # Últimos 10 mensajes
+
+    prompt_completo = f"""
+    Historial de la conversación reciente:
+    {contexto_conversacion}
+
+    Responde al último mensaje del usuario manteniendo tu personalidad institucional de Malbi.
+    """
+
     try:
-        # 3. Llamar a la API de Gemini con el modelo oficial gemini-3.8-flash
+        # Llamada a Gemini usando el SDK moderno y pasando la función propia en tools
         response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=chat_history,
+            model='gemini-3.5-flash-lite',
+            contents=prompt_completo,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                tools=[consultar_clima],  # <--- Acá se habilita la función propia
                 temperature=0.7,
-            ),
+            )
         )
-        bot_response = response.text
-        
-        # 4. Guardar respuesta del bot en SQLite
-        guardar_mensaje(user_id, "model", bot_response)
-        
-        await update.message.reply_text(bot_response)
-        
-    except Exception as e:
-        logger.error(f"Error al conectar con Gemini: {e}")
-        await update.message.reply_text("Disculpa, los servidores están experimentando alta demanda en este momento. Intenta enviarme el mensaje de nuevo en unos segundos.")
 
-def main() -> None:
-    init_db()
-    if not TOKEN:
-        raise ValueError("Falta el TELEGRAM_TOKEN en el archivo .env")
-        
-    application = Application.builder().token(TOKEN).build()
-    
+        # Verificar si el modelo decidió invocar la función propia (Tool Call)
+        if response.function_calls:
+            for function_call in response.function_calls:
+                logger.info(f"Gemini solicitó llamar a la función: {function_call.name} con argumentos: {function_call.args}")
+                
+                # Ejecutar localmente la función solicitada
+                if function_call.name == "consultar_clima":
+                    args = function_call.args or {}
+                    ciudad_arg = args.get("ciudad", "Mendoza")
+                    resultado_funcion = consultar_clima(ciudad=ciudad_arg)
+                    
+                    # Enviar el resultado de vuelta a Gemini para que redacte la respuesta final al usuario
+                    response_final = client.models.generate_content(
+                        model='gemini-3.5-flash-lite',
+                        contents=f"El resultado de la función consultar_clima fue: {resultado_funcion}. Responde al usuario amablemente incorporando este dato.",
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            temperature=0.7,
+                        )
+                    )
+                    bot_reply = response_final.text
+                else:
+                    bot_reply = "Ejecuté la herramienta solicitada pero no se reconoció la función."
+        else:
+            bot_reply = response.text
+
+        # Guardar respuesta en el historial
+        historiales[user_id].append(f"Malbi: {bot_reply}")
+
+        # Enviar respuesta a Telegram
+        await update.message.reply_text(bot_reply)
+
+    except Exception as e:
+        logger.error(f"Error al conectar con la API de Gemini: {str(e)}")
+        await update.message.reply_text("Disculpa, tuve un problema técnico procesando tu consulta. Por favor, intenta de nuevo en unos momentos.")
+
+def main():
+    """Función principal para arrancar el bot."""
+    if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+        logger.error("Faltan configurar TELEGRAM_TOKEN o GEMINI_API_KEY en el archivo .env")
+        return
+
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("limpiar", limpiar_conversacion))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("🤖 ¡Bot v3 con Gemini y SQLite iniciado con éxito!")
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), manejar_mensaje))
+
+    logger.info("¡Bot Malbi iniciado correctamente y listo para el Hito 3!")
     application.run_polling()
 
 if __name__ == "__main__":
