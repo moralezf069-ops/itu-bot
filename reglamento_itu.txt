@@ -1,0 +1,15 @@
+reglamento_itu.txt
+DOCUMENTO OFICIAL INSTITUCIONAL - ITU (Instituto Tecnológico Universitario)
+Reglamento Académico y Normativa de Estudiantes de Desarrollo de Software.
+
+1. INSCRIPCIÓN A EXÁMENES FINALES:
+Las inscripciones a los exámenes finales se realizan exclusivamente a través de la plataforma oficial del ITU en las fechas establecidas en el calendario académico (habitualmente 48 horas hábiles antes de la mesa). Es requisito obligatorio tener regularizada la materia y las correlatividades aprobadas al día de la inscripción.
+
+2. RÉGIMEN DE ASISTENCIA:
+Para mantener la regularidad en las materias presenciales de la Tecnicatura en Desarrollo de Software, se exige un mínimo de 75% de asistencia a las clases teóricas-prácticas. En caso de materias bajo modalidad virtual o híbrida, se evalúa la entrega de trabajos prácticos semanales.
+
+3. PROMOCIÓN DIRECTA:
+Las asignaturas de programación y bases de datos permiten la promoción directa si el alumno obtiene una calificación igual o superior a 8 (ocho) en cada uno de los dos exámenes parciales y presenta el proyecto integrador aprobado. No se toman recuperatorios para nota de promoción, solo para regularizar.
+
+4. CONSTANCIAS Y CERTIFICADOS:
+La solicitud de certificados de alumno regular y analíticos parciales se gestiona mediante el sistema web institucional. El tiempo estimado de emisión digital es de 24 a 48 horas hábiles.
