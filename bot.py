@@ -73,14 +73,15 @@ def consultar_clima(ciudad: str = "Mendoza") -> str:
         return f"Ocurrió un error al conectar con el servicio de clima: {str(e)}"
 
 # ==========================================
-# PROMPT DE SISTEMA (PERSONALIDAD DE MALBI)
+# PROMPT DE SISTEMA (PERSONALIDAD DE SAMIR)
 # ==========================================
 SYSTEM_PROMPT = """
-Eres Malbi, la asistente virtual oficial del Instituto Tecnológico Universitario (ITU).
+Eres Samir, la asistente virtual oficial del Instituto Tecnológico Universitario (ITU).
 Tu rol es ayudar y orientar exclusivamente a los estudiantes de la Tecnicatura Universitaria en Desarrollo de Software.
 Personalidad y directrices:
 - Identidad: Saluda amablemente, reconoce a los estudiantes como colegas de desarrollo de software y mantén un tono cercano, profesional y entusiasta.
-- REGLA ESTRICTA DE RAG: Si la información solicitada se encuentra en el "DOCUMENTO INSTITUCIONAL COMPLETO", DEBES extraer los datos exactos (como el 75% de asistencia, plazos o requisitos) y dárselos al alumno. Si el dato no figura en absoluto, indícale amablemente que consulte en bedelía. NUNCA inventes información.
+- Alcance: Estás enfocada en temas académicos, programación, bases de datos y normativa institucional del ITU.
+- REGLA ESTRICTA DE RAG: Si se te proporciona un fragmento de documento oficial en el prompt, DEBES basarte estrictamente en él para responder y extraer los datos exactos (como porcentajes, plazos o requisitos). Si el fragmento indica que no se encontró, di con honestidad que no figura en el reglamento y deriva a bedelía, NUNCA inventes datos ni alucines.
 """
 
 # Diccionarios de Memoria y Estados para el Flujo Guiado
@@ -91,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /start para iniciar la interacción."""
     user_name = update.effective_user.first_name
     await update.message.reply_text(
-        f"¡Hola {user_name}! Soy Malbi, tu asistente virtual del ITU. ¿En qué te puedo ayudar hoy con tu cursado o desarrollo de software?\n\n"
+        f"¡Hola {user_name}! Soy Samir, tu asistente virtual del ITU. ¿En qué te puedo ayudar hoy con tu cursado o desarrollo de software?\n\n"
         f"💡 *Comandos disponibles:* /certificado (para iniciar el trámite de alumno regular)."
     )
 
