@@ -9,6 +9,9 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+# Importar el índice RAG vectorial personalizado
+from rag_vector import RAGVectorIndex
+
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
@@ -25,6 +28,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Inicializar cliente oficial de Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Inicializar el índice RAG vectorial al arrancar el bot
+rag_index = RAGVectorIndex("reglamento_itu.txt")
+
 # ==========================================
 # DEFINICIÓN DE PYDANTIC (SALIDA ESTRUCTURADA)
 # ==========================================
@@ -32,28 +38,14 @@ class AnalisisConsultaEstudiante(BaseModel):
     tema_principal: str = Field(description="Tema de la consulta: inscripciones, finales, asistencia, promocion, certificados o clima.")
     nivel_urgencia: str = Field(description="Clasificación de urgencia: baja, media o alta.")
     resumen_intencion: str = Field(description="Breve resumen de lo que el alumno necesita resolver.")
-    sugerencia_respuesta: str = Field(description="Respuesta completa y detallada para el alumno, utilizando obligatoriamente los datos del documento institucional (RAG).")
+    sugerencia_respuesta: str = Field(description="Respuesta completa y detallada para el alumno, utilizando obligatoriamente los datos institucionales recuperados por el RAG.")
 
 # ==========================================
-# MÓDULO RAG (BÚSQUEDA EN DOCUMENTOS DEL ITU)
+# MÓDULO RAG VECTORIAL
 # ==========================================
 def buscar_en_reglamento(query: str) -> str:
-    """Carga el documento institucional completo para asegurar que Gemini tenga todo el contexto disponible."""
-    ruta_archivo = "reglamento_itu.txt"
-    if not os.path.exists(ruta_archivo):
-        logger.warning("El archivo reglamento_itu.txt no se encuentra.")
-        return "No hay documentos institucionales cargados."
-
-    try:
-        with open(ruta_archivo, "r", encoding="utf-8") as f:
-            contenido = f.read()
-
-        logger.info(f"-> [RAG CREADO] Documento institucional cargado correctamente para la consulta: '{query}'")
-        return contenido
-
-    except Exception as e:
-        logger.error(f"Error en RAG: {str(e)}")
-        return "Error al procesar los documentos institucionales."
+    """Busca el fragmento más relevante utilizando el índice vectorial RAG."""
+    return rag_index.buscar(query)
 
 # ==========================================
 # FUNCIÓN PROPIA (TOOL USE / CLIMA)
@@ -80,8 +72,7 @@ Eres Samir, la asistente virtual oficial del Instituto Tecnológico Universitari
 Tu rol es ayudar y orientar exclusivamente a los estudiantes de la Tecnicatura Universitaria en Desarrollo de Software.
 Personalidad y directrices:
 - Identidad: Saluda amablemente, reconoce a los estudiantes como colegas de desarrollo de software y mantén un tono cercano, profesional y entusiasta.
-- Alcance: Estás enfocada en temas académicos, programación, bases de datos y normativa institucional del ITU.
-- REGLA ESTRICTA DE RAG: Si se te proporciona un fragmento de documento oficial en el prompt, DEBES basarte estrictamente en él para responder y extraer los datos exactos (como porcentajes, plazos o requisitos). Si el fragmento indica que no se encontró, di con honestidad que no figura en el reglamento y deriva a bedelía, NUNCA inventes datos ni alucines.
+- REGLA ESTRICTA DE RAG: Si el "FRAGMENTO OFICIAL RECUPERADO" contiene datos (como el 75% de asistencia, plazos o requisitos), DEBES incluir esos datos exactos en tu respuesta al alumno. Si dice que no se encontró, indícale amablemente que consulte en bedelía. NUNCA inventes información.
 """
 
 # Diccionarios de Memoria y Estados para el Flujo Guiado
@@ -97,7 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def iniciar_flujo_certificado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inicia el Módulo Avanzado 2: Flujo Guiado para Certificados."""
+    """Inicia el Flujo Guiado para Certificados."""
     user_id = update.effective_user.id
     flujos_activos[user_id] = {
         "paso": "ESPERANDO_DNI",
@@ -110,17 +101,22 @@ async def iniciar_flujo_certificado(update: Update, context: ContextTypes.DEFAUL
     )
 
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja los mensajes integrando Flujo Guiado, RAG, Pydantic, Memoria y Tools."""
+    """Maneja los mensajes integrando Flujo Guiado, RAG Vectorial, Pydantic, Memoria y Tools."""
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
 
+    # Detectar si pregunta por el clima antes de pasar por Pydantic y el RAG
+    if "clima" in user_message.lower() or "tiempo" in user_message.lower():
+        resultado_clima = consultar_clima("Mendoza")
+        await update.message.reply_text(f"🌤️ Información meteorológica para el ITU:\n{resultado_clima}")
+        return
+
     # ==========================================
-    # GESTIÓN DEL MÓDULO 2: FLUJO GUIADO
+    # GESTIÓN DEL MÓDULO: FLUJO GUIADO
     # ==========================================
     if user_id in flujos_activos:
         estado_actual = flujos_activos[user_id]["paso"]
 
-        # Permitir cancelar a mitad de flujo
         if user_message.lower() == "cancelar":
             del flujos_activos[user_id]
             logger.info(f"-> [FLUJO GUIADO] Cancelado por el usuario {user_id}")
@@ -128,7 +124,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if estado_actual == "ESPERANDO_DNI":
-            # Validación de dato inválido (debe ser numérico y tener entre 7 y 8 dígitos)
             if not user_message.isdigit() or not (7 <= len(user_message) <= 8):
                 logger.warning(f"-> [FLUJO GUIADO] DNI inválido rechazado: '{user_message}'")
                 await update.message.reply_text(
@@ -137,7 +132,6 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            # Guardar DNI y pasar al siguiente paso
             flujos_activos[user_id]["datos"]["dni"] = user_message
             flujos_activos[user_id]["paso"] = "ESPERANDO_ANIO"
             logger.info(f"-> [FLUJO GUIADO] DNI válido guardado: {user_message}. Solicitando año.")
@@ -152,9 +146,8 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dni_registrado = flujos_activos[user_id]["datos"]["dni"]
             anio_registrado = user_message
 
-            # Fin del flujo guiado exitoso
             logger.info(f"-> [FLUJO GUIADO] Trámite completado con éxito para DNI {dni_registrado}, Año {anio_registrado}")
-            del flujos_activos[user_id] # Limpiar estado
+            del flujos_activos[user_id]
 
             await update.message.reply_text(
                 f"✅ **¡Trámite completado con éxito!**\n\n"
@@ -166,7 +159,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ==========================================
-    # FLUJO NORMAL (RAG + PYDANTIC + TOOLS)
+    # FLUJO NORMAL (RAG VECTORIAL + PYDANTIC + TOOLS)
     # ==========================================
     if user_id not in historiales:
         historiales[user_id] = []
@@ -174,25 +167,26 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     historiales[user_id].append(f"Usuario: {user_message}")
     contexto_conversacion = "\n".join(historiales[user_id][-10:])
 
-    # Cargar documento RAG
-    documento_rag = buscar_en_reglamento(user_message)
+    # 1. BÚSQUEDA RAG VECTORIAL
+    fragmento_rag = buscar_en_reglamento(user_message)
 
+    # 2. CONSTRUIR EL PROMPT CON EL FRAGMENTO RECUPERADO
     prompt_completo = f"""
     Historial reciente:
     {contexto_conversacion}
 
     ---
-    DOCUMENTO INSTITUCIONAL COMPLETO (RAG):
-    {documento_rag}
+    FRAGMENTO OFICIAL RECUPERADO (RAG VECTORIAL):
+    {fragmento_rag}
     ---
 
     Consulta del alumno: "{user_message}"
     
-    Instrucción: Lee detenidamente el documento institucional completo y responde con absoluta precisión en la 'sugerencia_respuesta' utilizando los datos reales (por ejemplo, el 75% de asistencia si te preguntan por asistencia). Si el alumno pregunta por certificados, recuérdale que puede usar el comando /certificado.
+    Instrucción: Utiliza la información del FRAGMENTO OFICIAL RECUPERADO para responder con exactitud en la 'sugerencia_respuesta'. Si el fragmento tiene el dato (ej. el 75% de asistencia), menciónalo explícitamente. Si no se encuentra, indícalo claramente.
     """
 
     response = None
-    for modelo_intento in ['gemini-3.5-flash-lite', 'gemini-1.5-flash']:
+    for modelo_intento in ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.5-flash-lite']:
         try:
             logger.info(f"Intentando generar contenido con el modelo: {modelo_intento}")
             response = client.models.generate_content(
@@ -225,33 +219,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Sugerencia: {analisis.sugerencia_respuesta}")
             logger.info(f"----------------------------------------")
 
-        # Verificar si requiere herramienta (clima)
-        if response.function_calls:
-            for function_call in response.function_calls:
-                logger.info(f"Gemini invocó la herramienta: {function_call.name}")
-                if function_call.name == "consultar_clima":
-                    args = function_call.args or {}
-                    ciudad_arg = args.get("ciudad", "Mendoza")
-                    resultado_funcion = consultar_clima(ciudad=ciudad_arg)
-                    
-                    response_final = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=f"El resultado de la función consultar_clima fue: {resultado_funcion}. Responde amablemente al usuario.",
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            temperature=0.7,
-                        )
-                    )
-                    bot_reply = response_final.text
-                else:
-                    bot_reply = analisis.sugerencia_respuesta if analisis else "Procesado correctamente."
-        else:
-            bot_reply = analisis.sugerencia_respuesta if analisis else "¡Hola! Te estoy leyendo, ¿en qué te ayudo?"
+        bot_reply = analisis.sugerencia_respuesta if analisis else "¡Hola! Te estoy leyendo, ¿en qué te ayudo?"
 
         if not bot_reply or not bot_reply.strip():
             bot_reply = "¡Listo! Procesé tu consulta correctamente desde el sistema del ITU."
 
-        historiales[user_id].append(f"Malbi: {bot_reply}")
+        historiales[user_id].append(f"Samir: {bot_reply}")
         await update.message.reply_text(bot_reply)
 
     except Exception as e:
@@ -269,7 +242,7 @@ def main():
     application.add_handler(CommandHandler("certificado", iniciar_flujo_certificado))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), manejar_mensaje))
 
-    logger.info("¡Bot Malbi Hito 4 iniciado con RAG, Pydantic, Tools y Flujo Guiado!")
+    logger.info("¡Bot Samir iniciado con RAG Vectorial, Pydantic, Tools y Flujo Guiado!")
     application.run_polling()
 
 if __name__ == "__main__":
