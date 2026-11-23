@@ -1,6 +1,5 @@
 import os
 import logging
-import json
 import requests
 from dotenv import load_dotenv
 from telegram import Update
@@ -9,7 +8,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-# Importar el índice RAG vectorial personalizado
+# Importar el índice RAG vectorial / híbrido personalizado
 from rag_vector import RAGVectorIndex
 
 # Cargar variables de entorno desde el archivo .env
@@ -28,7 +27,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Inicializar cliente oficial de Google GenAI
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Inicializar el índice RAG vectorial al arrancar el bot
+# Inicializar el índice RAG al arrancar el bot
 rag_index = RAGVectorIndex("reglamento_itu.txt")
 
 # ==========================================
@@ -41,10 +40,10 @@ class AnalisisConsultaEstudiante(BaseModel):
     sugerencia_respuesta: str = Field(description="Respuesta completa y detallada para el alumno, utilizando obligatoriamente los datos institucionales recuperados por el RAG.")
 
 # ==========================================
-# MÓDULO RAG VECTORIAL
+# MÓDULO RAG
 # ==========================================
 def buscar_en_reglamento(query: str) -> str:
-    """Busca el fragmento más relevante utilizando el índice vectorial RAG."""
+    """Busca el fragmento más relevante utilizando el índice RAG."""
     return rag_index.buscar(query)
 
 # ==========================================
@@ -101,7 +100,7 @@ async def iniciar_flujo_certificado(update: Update, context: ContextTypes.DEFAUL
     )
 
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja los mensajes integrando Flujo Guiado, RAG Vectorial, Pydantic, Memoria y Tools."""
+    """Maneja los mensajes integrando Flujo Guiado, RAG, Pydantic, Memoria y Tools."""
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
 
@@ -131,7 +130,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Por favor, ingrésalo nuevamente o escribe **cancelar**:"
                 )
                 return
-            
+
             flujos_activos[user_id]["datos"]["dni"] = user_message
             flujos_activos[user_id]["paso"] = "ESPERANDO_ANIO"
             logger.info(f"-> [FLUJO GUIADO] DNI válido guardado: {user_message}. Solicitando año.")
@@ -159,7 +158,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ==========================================
-    # FLUJO NORMAL (RAG VECTORIAL + PYDANTIC + TOOLS)
+    # FLUJO NORMAL (RAG + PYDANTIC + TOOLS)
     # ==========================================
     if user_id not in historiales:
         historiales[user_id] = []
@@ -167,7 +166,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     historiales[user_id].append(f"Usuario: {user_message}")
     contexto_conversacion = "\n".join(historiales[user_id][-10:])
 
-    # 1. BÚSQUEDA RAG VECTORIAL
+    # 1. BÚSQUEDA RAG
     fragmento_rag = buscar_en_reglamento(user_message)
 
     # 2. CONSTRUIR EL PROMPT CON EL FRAGMENTO RECUPERADO
@@ -176,12 +175,12 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     {contexto_conversacion}
 
     ---
-    FRAGMENTO OFICIAL RECUPERADO (RAG VECTORIAL):
+    FRAGMENTO OFICIAL RECUPERADO:
     {fragmento_rag}
     ---
 
     Consulta del alumno: "{user_message}"
-    
+
     Instrucción: Utiliza la información del FRAGMENTO OFICIAL RECUPERADO para responder con exactitud en la 'sugerencia_respuesta'. Si el fragmento tiene el dato (ej. el 75% de asistencia), menciónalo explícitamente. Si no se encuentra, indícalo claramente.
     """
 
@@ -210,7 +209,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise Exception("Todos los modelos fallaron.")
 
         analisis: AnalisisConsultaEstudiante = response.parsed
-        
+
         if analisis:
             logger.info(f"--- [ESTRUCTURA PYDANTIC VALIDADA] ---")
             logger.info(f"Tema: {analisis.tema_principal}")
@@ -242,8 +241,25 @@ def main():
     application.add_handler(CommandHandler("certificado", iniciar_flujo_certificado))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), manejar_mensaje))
 
-    logger.info("¡Bot Samir iniciado con RAG Vectorial, Pydantic, Tools y Flujo Guiado!")
-    application.run_polling()
+    use_webhook = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+    port = int(os.getenv("PORT", "8080"))
+    webhook_url = os.getenv("WEBHOOK_URL", "").rstrip("/")
+
+    if use_webhook and webhook_url:
+        # En muchos PaaS (como Render o Railway), la URL pública apunta al puerto 443/80
+        # y la app escucha en 0.0.0.0:PORT
+        url_path = TELEGRAM_TOKEN
+        full_webhook_url = f"{webhook_url}/{url_path}"
+        logger.info(f"¡Bot Samir iniciado en modo WEBHOOK en el puerto {port}!")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=url_path,
+            webhook_url=full_webhook_url,
+        )
+    else:
+        logger.info("¡Bot Samir iniciado en modo POLLING con RAG Híbrido, Pydantic, Tools y Flujo Guiado!")
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
