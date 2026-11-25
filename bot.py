@@ -44,9 +44,8 @@ if not GEMINI_API_KEY:
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 MODELOS_GEMINI = [
-    os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+    os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
 ]
-
 # ==============================================================================
 # ESQUEMA PYDANTIC
 # ==============================================================================
